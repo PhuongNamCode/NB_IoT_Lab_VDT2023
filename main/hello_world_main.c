@@ -1,11 +1,4 @@
-/* Hello World Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
+// NB_IOT use UART for communication AT commands 
 #include <stdio.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -14,82 +7,175 @@
 #include "esp_spi_flash.h"
 #include "freertos/timers.h"
 #include <driver/gpio.h>
-#include "input_iot.h"
 #include "freertos/event_groups.h"
-
-TimerHandle_t xTimers[2];
-EventGroupHandle_t xEventGroup;
+#include "input_iot.h"
+#include "output_iot.h"
+#include "driver/uart.h"
+#include <string.h>
+#include <esp_log.h>
 
 #define BIT_EVENT_BUTTON_PRESS	( 1 << 0 )
 #define BIT_EVENT_UART	        ( 1 << 1 )
+#define TXD_PIN (GPIO_NUM_17)
+#define RXD_PIN (GPIO_NUM_16)
 
-void vTask1(void *pvParameters){
-    for(;;){
-        EventBits_t uxBits = xEventGroupWaitBits(
-            xEventGroup,   /* The event group being tested. */
-            BIT_EVENT_BUTTON_PRESS | BIT_EVENT_UART, /* The bits within the event group to wait for. */
-            pdTRUE,        /* BIT_0 & BIT_4 should be cleared before returning. */
-            pdFALSE,       /* Don't wait for both bits, either bit will do. */
-            portMAX_DELAY);/* Wait a maximum of 100ms for either bit to be set. */
-    
-    if(uxBits & BIT_EVENT_BUTTON_PRESS)
-    {
-        printf("Button press\n");
-        static int x;
-        gpio_set_level(2,x);
-        x = 1- x;
-    }
-    if(uxBits & BIT_EVENT_UART)
-    {
-        printf("UART\n");
-    }
-    
-    }
-  
+static const int RX_BUF_SIZE = 1024*4;
+// Khai báo một biến đánh dấu trạng thái
+static int currentCommand = 0;
+static int success = 0;
+static int flagCommandCENG = 0;
+static char RSRP_INDEX[20];
+static char RSSI_INDEX[20];
+static char RSRQ_INDEX[20];
 
+void init(void) {
+    const uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    // We won't use a buffer for sending data.
+    uart_driver_install(UART_NUM_1, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
+    uart_param_config(UART_NUM_1, &uart_config);
+    uart_set_pin(UART_NUM_1, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
-// void vTimerCallback( TimerHandle_t xTimer )
-// {
-//     configASSERT( xTimer );
-//     int ulCount = ( uint32_t ) pvTimerGetTimerID( xTimer );
-//     if( ulCount==0)
-//     {
-//         static int x;
-//         gpio_set_level(2,x);
-//         x = 1- x;
-//     }
-//     else if( ulCount==1)
-//     {
-//         printf(" Hi \n");
-//     }
-
-// }
-void button_callback(int pin)
+void initPower()
 {
-    BaseType_t pxHigherPriorityTaskWoken;
-    if( pin== GPIO_NUM_0)
+    output_io_create(5);
+    output_io_set(5,0);
+    ets_delay_us(1500000);
+    output_io_set(5,1);
+}
+
+int sendData(const char* logName, const char* data)
+{
+    const int len = strlen(data);
+    const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
+    ESP_LOGI(logName, "Wrote %d bytes", txBytes);
+    return txBytes;
+}
+
+void sendMulData(void *arg)
+{
+    while(1)
     {
-        xEventGroupSetBitsFromISR(xEventGroup, BIT_EVENT_BUTTON_PRESS, &pxHigherPriorityTaskWoken );
+        switch(currentCommand) 
+            {
+                case 0:
+                    sendData("DATA", "ATE0\r");
+                    if (success)
+                    {
+                        currentCommand = currentCommand +1;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0; 
+                    } 
+                    break;
+                case 1:
+                    
+                    sendData("DATA", "AT+CEREG?\r");
+                    if (success)
+                    {
+                        currentCommand = currentCommand +1;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0; 
+                    } 
+                    break;
+                    
+                case 2:
+                    sendData("DATA", "AT+CENG?\r");
+                    flagCommandCENG = 1;
+                    if (success)
+                    {
+                        currentCommand = currentCommand +1;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0;
+                    } 
+                    break; 
+                case 3:
+                    sendData("DATA", "AT\r");
+                    if (success)
+                    {
+                        currentCommand = currentCommand +1;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0;
+                    } 
+                    break;
+                case 4:
+                    sendData("DATA", "AT\r");
+                    if (success)
+                    {
+                        currentCommand = currentCommand +1;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0; 
+                    } 
+                    break;
+                 case 5:
+                    sendData("DATA", "AT\r");
+                    if (success)
+                    {
+                        currentCommand = 0;
+                        ESP_LOGI("TAG", "currentCommand = %d", currentCommand);
+                        success = 0; 
+                    } 
+                    break;
+             }
+        vTaskDelay(pdMS_TO_TICKS(2000)); 
     }
+}
+
+void convertDataCENG(char *data)
+{
+    char dataArray[200];
+    char *tokens[10];
+    int i = 0;
+
+    strcpy(dataArray, data);
+    
+    tokens[i] = strtok(dataArray, ",");
+    
+    while (tokens[i] != NULL && i < 10) {
+        i++;
+        tokens[i] = strtok(NULL, ",");
+    }
+    // Gán từng biến
+    strcpy(RSRP_INDEX, tokens[6]);
+    strcpy(RSSI_INDEX, tokens[7]);
+    strcpy(RSRQ_INDEX, tokens[8]);
+}
+
+static void rx_task(void *arg)
+{
+    static const char *RX_TASK_TAG = "RX_TASK";
+    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
+    uint8_t* data = (uint8_t*) malloc(RX_BUF_SIZE+1);
+    while (1) {
+        const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 1000 / portTICK_RATE_MS);
+        if (rxBytes > 0) {
+            data[rxBytes] = 0;
+            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
+            if (strstr((char*)data, "OK") != NULL)
+            success = 1;
+            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
+            if (flagCommandCENG==1){
+                convertDataCENG((char *)data);
+                ESP_LOGI("TAG", "RSRP_INDEX = %s", RSRP_INDEX);
+                ESP_LOGI("TAG", "RSSI_INDEX = %s", RSSI_INDEX);
+                ESP_LOGI("TAG", "RSRQ_INDEX = %s", RSRQ_INDEX); 
+            }
+        }
+    }
+    free(data);
 }
 
 void app_main(void)
 {
-
-    gpio_pad_select_gpio(2);
-    gpio_set_direction(2, GPIO_MODE_INPUT_OUTPUT); 
-
-    input_io_create(0,HI_TO_LO);
-    input_set_callback(button_callback);
-
-    // xTimers[0] = xTimerCreate( "TimerBlink",pdMS_TO_TICKS( 500 ),pdTRUE,( void * ) 0,vTimerCallback);
-    // xTimers[1] = xTimerCreate( "TimerPrintf",pdMS_TO_TICKS( 500 ),pdTRUE,( void * ) 1,vTimerCallback);
-    // xTimerStart(xTimers[0],0);
-    // xTimerStart(xTimers[1],0);
-
-    xEventGroup = xEventGroupCreate();
-
-    xTaskCreate (vTask1, "Task1",1024,NULL,4,NULL);
- 
+    init();
+    initPower();
+    ets_delay_us(1500000);
+    xTaskCreate (sendMulData,"sendMulData",1024*2,NULL,6,NULL);
+    xTaskCreate (rx_task, "uart_rx_task",1024*2, NULL,5, NULL);
 }
